@@ -4,7 +4,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 import sys
-from dateutil import parser
 
 # .envファイルから設定を読み込む
 load_dotenv()
@@ -12,10 +11,9 @@ load_dotenv()
 # FIWARE Orionの設定を.envから取得
 authorization = os.getenv("FIWARE_AUTHORIZATION")
 orion_endpoint = os.getenv("FIWARE_ORION_ENDPOINT")
-Fiware_Service = os.getenv("FIWARE_SERVICE")
-Fiware_ServicePath = os.getenv("FIWARE_SERVICE_PATH")
+fiware_service = os.getenv("FIWARE_SERVICE")
+fiware_service_path = os.getenv("FIWARE_SERVICE_PATH")
 
-# 特殊文字や制御文字を除去する関数
 def sanitize_value(value):
     if value is None:
         return None
@@ -29,40 +27,59 @@ def main():
         print("使用法: python script.py YYYY-MM-DD")
         sys.exit(1)
     specified_date_str = sys.argv[1]
+
+    # 日付のフォーマットを確認
     try:
-        specified_date = datetime.strptime(specified_date_str, '%Y-%m-%d').date()
+        datetime.strptime(specified_date_str, '%Y-%m-%d')
     except ValueError:
         print("日付の形式が正しくありません。YYYY-MM-DD形式で指定してください。")
         sys.exit(1)
 
     # FIWARE Orionからイベントデータを取得
     headers = {
-        'Fiware-Service': Fiware_Service,
-        'Fiware-ServicePath': Fiware_ServicePath,
+        'Fiware-Service': fiware_service,
+        'Fiware-ServicePath': fiware_service_path,
     }
     if authorization:
         headers['Authorization'] = authorization
 
-    params = {
+    # クエリパラメータの作成（値をクォーテーションで囲まない）
+    q1 = f"start_date<={specified_date_str};end_date>={specified_date_str}"
+    q2 = f"start_date=={specified_date_str};!end_date"
+
+    params1 = {
         'type': 'Event',
-        'options': 'keyValues'
+        'options': 'keyValues',
+        'limit': '1000',
+        'q': q1
     }
-    response = requests.get(orion_endpoint + "/v2/entities", headers=headers, params=params)
-    if response.status_code != 200:
-        print(f"Error {response.status_code}: Failed to retrieve data from FIWARE Orion.")
-        print("Response:", response.text)
+
+    params2 = {
+        'type': 'Event',
+        'options': 'keyValues',
+        'limit': '1000',
+        'q': q2
+    }
+
+    # 最初のクエリを実行
+    response1 = requests.get(orion_endpoint + "/v2/entities", headers=headers, params=params1)
+    if response1.status_code != 200:
+        print(f"Error {response1.status_code}: {response1.text}")
         sys.exit(1)
-    events = response.json()
+    events1 = response1.json()
+
+    # 2つ目のクエリを実行
+    response2 = requests.get(orion_endpoint + "/v2/entities", headers=headers, params=params2)
+    if response2.status_code != 200:
+        print(f"Error {response2.status_code}: {response2.text}")
+        sys.exit(1)
+    events2 = response2.json()
+
+    # 結果を結合し、IDで重複を排除
+    all_events = {event['id']: event for event in events1 + events2}
+    events = list(all_events.values())
 
     print(f"Retrieved {len(events)} events from FIWARE Orion.")
-
-    # イベントデータの構造を確認
-    if events:
-        print("Sample event data:")
-        print(json.dumps(events[0], ensure_ascii=False, indent=4))
-    else:
-        print("No events found.")
-        sys.exit(0)
 
     # 属性名のマッピングを作成
     attribute_mapping = {
@@ -106,39 +123,28 @@ def main():
         "施設No.": "facility_no"
     }
 
-    # 指定された日付のイベントをフィルタリング
+    # イベント情報を収集し、日本語の項目名で出力
     filtered_events = []
     for event in events:
-        start_date_str = event.get('start_date')
-        end_date_str = event.get('end_date')
+        event_info = {}
+        for japanese_key, english_key in attribute_mapping.items():
+            value = sanitize_value(event.get(english_key))
+            if english_key in ['start_date', 'end_date', 'registration_end_date', 'published_date', 'updated_at']:
+                # 日付をYYYY-MM-DD形式に変換
+                if value:
+                    try:
+                        date_value = datetime.strptime(value, '%Y-%m-%d')
+                        value = date_value.strftime('%Y-%m-%d')
+                    except ValueError:
+                        value = None
+            event_info[japanese_key] = value
+        filtered_events.append(event_info)
 
-        # 日付のパース
-        try:
-            start_date = parser.isoparse(start_date_str).date() if start_date_str else None
-            end_date = parser.isoparse(end_date_str).date() if end_date_str else None
-        except (ValueError, TypeError):
-            continue  # 日付の形式が不正な場合はスキップ
-
-        # フィルタリング条件
-        if (end_date is None and start_date == specified_date) or \
-           (end_date is not None and start_date <= specified_date <= end_date):
-            # イベント情報を収集
-            event_info = {}
-            for japanese_key, english_key in attribute_mapping.items():
-                value = sanitize_value(event.get(english_key))
-                if english_key in ['start_date', 'end_date', 'registration_end_date', 'published_date', 'updated_at']:
-                    # 日付をYYYY-MM-DD形式に変換
-                    if value:
-                        try:
-                            date_value = parser.isoparse(value).date()
-                            value = date_value.strftime('%Y-%m-%d')
-                        except (ValueError, TypeError):
-                            value = None
-                event_info[japanese_key] = value
-            filtered_events.append(event_info)
-
-    # JSON出力
-    print(json.dumps(filtered_events, ensure_ascii=False, indent=4))
+    # JSONをファイルに書き込む
+    output_filename = f"events_{specified_date_str}.json"
+    with open(output_filename, 'w', encoding='utf-8') as f:
+        json.dump(filtered_events, f, ensure_ascii=False, indent=4)
+    print(f"イベントデータを'{output_filename}'に出力しました。")
 
 if __name__ == "__main__":
     main()
