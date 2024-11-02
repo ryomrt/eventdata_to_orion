@@ -59,7 +59,7 @@ def DataSend(APIurl, PayLoad, method="post"):
     }
     try:
         payload_str = json.dumps(PayLoad, ensure_ascii=False, allow_nan=False)
-        print("Payload to send:", payload_str)
+        # print("Payload to send:", payload_str)
         if method == "post":
             response = requests.post(orion_endpoint + APIurl, headers=headers, data=payload_str)
         else:
