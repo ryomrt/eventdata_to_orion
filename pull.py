@@ -133,7 +133,7 @@ def main():
                 # 日付をYYYY-MM-DD形式に変換
                 if value:
                     try:
-                        date_value = datetime.strptime(value, '%Y-%m-%d')
+                        date_value = datetime.strptime(value, '%Y-%m-%dT%H:%M:%S.%fZ')
                         value = date_value.strftime('%Y-%m-%d')
                     except ValueError:
                         value = None
